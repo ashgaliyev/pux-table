@@ -1,15 +1,18 @@
 module App.Components.Table where
 
-import Prelude (($), show, (<$>), class Show, const, Ordering(..), (==), map, (<>), const)
+import Prelude (($), show, (<$>), class Show, const, Ordering(..), (==), (/=), map, (<>), const)
 import Pux.Html (Html, ul, li, text, button, div, table, tr, td, th)
 import Pux.Html.Attributes (className)
 import Pux.Html.Events (onClick)
 import Data.Ord (class Ord, compare)
 import Data.Eq (class Eq, eq)
-import Data.Array (sort, reverse, sortBy, filter, elem)
+import Data.Array (sort, reverse, sortBy, filter, elem, (:), groupBy, concatMap)
 import Data.Maybe (Maybe(..))
+import Data.Array.Partial (tail, head)
+import Partial.Unsafe (unsafePartial)
+import Data.NonEmpty (fromNonEmpty)
 
-data Sort = ASC | DESC
+data Sort = NoSort | ASC | DESC
 
 derive instance eqSort :: Eq Sort
 
@@ -20,13 +23,10 @@ data Action =
 type Field = String
 type Heading = String
 
-data SortColumn = SortColumn Field Sort
-
-data ViewColumn = ViewColumn Field Heading
+data Column = Column Field Heading Sort
 
 type State = {
-    sortCol :: SortColumn
-  , columns :: Array ViewColumn
+  columns :: Array Column
 }
 
 newtype Name = Name String
@@ -35,12 +35,10 @@ data Cell =
     CellString Name String
   | CellInt Name Int
 
-class WithName a where
-  getName :: a -> String
 
-instance cellWithName :: WithName Cell where
-  getName (CellString (Name a) _) = a
-  getName (CellInt (Name a) _) = a
+getName :: Cell -> String
+getName (CellString (Name n) _) = n
+getName (CellInt (Name n) _) = n
 
 instance cellEq :: Eq Cell where
   eq (CellString _ a) (CellString _ b) = eq a b
@@ -62,16 +60,38 @@ instance ordRow :: Ord Row where
 
 data Table = Table (Array Row)
 
-sortTable :: SortColumn -> Table -> Table
-sortTable (SortColumn col dir) (Table rows) =
-  if dir == ASC
-  then Table sorted
-  else Table $ reverse sorted
-    where
-      sorted = sortBy (\(Row x) (Row y) -> compareMy col x y) rows
-      compareMy name xs ys = compareRows (Row (filter (\x -> getName x == name ) xs)) (Row (filter (\x -> getName x == name ) ys))
-      compareRows (Row a) (Row b) = compare a b
+sortTable :: Array Column -> Table -> Table
+sortTable xs (Table rows) = Table (sortRows' (filter (\(Column _ _ s) -> s /= NoSort) xs) rows)
 
+compareMy :: Field -> Row -> Row -> Ordering
+compareMy name (Row xs) (Row ys) = compareRows (Row (filter (\x -> getName x == name ) xs)) (Row (filter (\x -> getName x == name ) ys))
+
+compareRows :: Row -> Row -> Ordering
+compareRows (Row a) (Row b) = compare a b
+
+
+-- sort rows by multiple columns
+sortRows' :: Array Column -> Array Row -> Array Row
+sortRows' [] rows = rows
+sortRows' [col] rows = sortRows col rows
+sortRows' cols rows = concatMap
+    (\x -> sortRows' (unsafePartial tail cols) x)
+    ((fromNonEmpty (:)) <$> (groupBy (\x y -> eq (compareMy (getF col) x y) EQ) sorted))
+  where
+    sorted = sortRows col rows
+    col = unsafePartial head cols
+    getF (Column f _ _) = f
+sortRows' _ rows = []
+
+
+sortRows :: Column -> Array Row -> Array Row
+sortRows (Column f h s) rows =
+  case s of
+    ASC  -> sorted
+    DESC -> reverse sorted
+    _ -> rows
+  where
+    sorted = sortBy (\x y -> compareMy f x y) rows
 
 sampleTable :: Table
 sampleTable = Table [
@@ -98,31 +118,41 @@ renderTable :: Table -> Array (Html Action) -> Array String -> Html Action
 renderTable (Table xs) headings cols = table [] (headings <> (renderRow cols <$> xs))
 
 renderHeadings :: State -> Array (Html Action)
-renderHeadings { sortCol : _sortCol, columns : _cols } =
-  [ tr [] (renderHeading _sortCol <$> _cols) ]
+renderHeadings { columns : _cols } =
+  [ tr [] (renderHeading <$> _cols) ]
   where
-    renderHeading :: SortColumn -> ViewColumn -> Html Action
-    renderHeading (SortColumn n1 s) (ViewColumn n2 title) =
-      if n1 == n2 then
+    renderHeading :: Column -> Html Action
+    renderHeading (Column f h s) =
         case s of
-          ASC -> th [ onClick ( const $ SortDesc n1) ] [ text $ title <> "↑" ]
-          _   -> th [ onClick ( const $ SortAsc n1) ] [ text $ title <> "↓" ]
-      else th [ onClick ( const $ SortAsc n2) ] [ text title ]
+          ASC  -> th [ onClick ( const $ SortDesc f) ] [ text $ h <> "↑" ]
+          DESC -> th [ onClick ( const $ SortAsc f) ] [ text $ h <> "↓" ]
+          _    -> th [ onClick ( const $ SortAsc f) ] [ text h ]
 
 
 
 update :: Action -> State -> State
-update (SortAsc str) st = st { sortCol = SortColumn str ASC }
-update (SortDesc str) st = st { sortCol = SortColumn str DESC }
+update (SortAsc str) st = st {
+  columns = map (\(Column f h s) ->
+                    if str == f
+                    then (Column f h ASC)
+                    else  (Column f h s)) st.columns
+  }
+
+update (SortDesc str) st = st {
+  columns = map (\(Column f h s) ->
+                    if str == f
+                    then (Column f h DESC)
+                    else  (Column f h s)) st.columns
+  }
 update _ st = st
 
 
 view :: Table -> State -> Html Action
-view t st@{ sortCol : _sortCol, columns : _cols } =
+view t st@{ columns : _cols } =
     div [] [
       renderTable sorted (renderHeadings st) (getFields _cols)
     ]
   where
-    sorted = sortTable _sortCol t
-    getFields :: Array ViewColumn -> Array String
-    getFields xs = map (\(ViewColumn f h) -> f) xs
+    sorted = sortTable _cols t
+    getFields :: Array Column -> Array String
+    getFields xs = map (\(Column f _ _) -> f) xs

@@ -13,6 +13,7 @@
     "purescript-lists": "^3.4.0",
     "purescript-foldable-traversable": "^2.2.0",
     "purescript-arrays": "^3.2.1",
-    "purescript-maybe": "^2.1.1"
+    "purescript-maybe": "^2.1.1",
+    "purescript-nonempty": "^3.0.0"
   }
 }
